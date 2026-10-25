@@ -1,0 +1,207 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <math.h>
+
+/*
+ * חישוב פונקציית הסיגמואיד המקורית
+ **/
+float true_sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+/*
+ * מודל 1: Full Range Model (מודל טווח מלא כפי שמצוין במאמר: [-5, 5])
+ * פריסה רחבה של מקטעים לשמירה על דיוק גם בקצוות התחום.
+*/
+uint8_t hw_sigmoid_full_range(uint8_t input_x) {
+    // שלב 1: הפרדת הסימן והערך המוחלט מתוך הקלט (Sign & Magnitude)
+    uint8_t sign = (input_x >> 7) & 0x01;
+    uint8_t abs_x = input_x & 0x7F;
+
+    uint8_t interval_idx = 0;
+    uint32_t shift_add_result = 0;
+    uint32_t intercept_q1_10 = 0;
+
+    // שלב 2: מפענח המרווחים (Interval Decoder) - חלוקה ל-7 אזורים
+    if (abs_x >= 80) { interval_idx = 6; } // [4.0, 5.0+)
+    else if (abs_x >= 64) { interval_idx = 5; } // [3.0, 4.0)
+    else if (abs_x >= 48) { interval_idx = 4; } // [2.25, 3.0)
+    else if (abs_x >= 36) { interval_idx = 3; } // [1.5, 2.25)
+    else if (abs_x >= 24) { interval_idx = 2; } // [0.6875, 1.5)
+    else if (abs_x >= 11) { interval_idx = 1; } // [0.0, 0.6875)
+    else { interval_idx = 0; }
+
+    // וטבלת חיתוכים(Shift-Add) שלב 3: רשת הזזות 
+    //   הערכים הפנימיים מוכפלים ב-8 (הזזה של 3 שמאלה) לשמירה על דיוק בחישוב עד לרמת השבר
+    switch (interval_idx) {
+    case 0: // שיפוע 16
+        intercept_q1_10 = 64 << 3;
+        shift_add_result = (abs_x << 4);
+        break;
+    case 1: // שיפוע 12
+        intercept_q1_10 = 69 << 3;
+        shift_add_result = (abs_x << 3) + (abs_x << 2);
+        break;
+    case 2: // שיפוע 8
+        intercept_q1_10 = 80 << 3;
+        shift_add_result = (abs_x << 3);
+        break;
+    case 3: // שיפוע 4
+        intercept_q1_10 = 98 << 3;
+        shift_add_result = (abs_x << 2);
+        break;
+    case 4: // שיפוע 2
+        intercept_q1_10 = 110 << 3;
+        shift_add_result = (abs_x << 1);
+        break;
+    case 5: // שיפוע 1
+        intercept_q1_10 = 118 << 3;
+        shift_add_result = abs_x;
+        break;
+    case 6: //  הגעה לתחום שהחל ממנו הפונקציה מחושבת ל1 כך שהשיפוע שווה ל0
+        intercept_q1_10 = 128 << 3;
+        shift_add_result = 0;
+        break;
+    }
+
+    // שלב 4: חיבור המשוואה הליניארית וחלוקה ב-8 (>> 3) כדי לחזור לפורמט הפלט שאותו צריף להוציא החוצה.
+    uint32_t mx_plus_c = shift_add_result + intercept_q1_10;
+    uint8_t sigma_abs_x = (uint8_t)(mx_plus_c >> 3);
+
+    // שלב 5: טיפול בערכים שליליים (Conditional 2's Complement)
+    // ביצוע פעולת חיסור מ-128 ללא שימוש ברכיב מחסר ייעודי, בעזרת פעולות לוגיות
+    if (sign == 1) {
+        sigma_abs_x = (~sigma_abs_x) + 1;
+        sigma_abs_x = sigma_abs_x & 0x7F;
+    }
+
+    // שלב 6:  
+    // (חסימת התוצאה למקסימום החוקי במערכת (128 המייצג את הערך 1.0
+    if (sigma_abs_x > 128 && sign == 0) {
+        sigma_abs_x = 128;
+    }
+
+    return sigma_abs_x;
+}
+
+/*
+ * מודל 2: Narrow Range Model (מודל טווח צר יותר: [-2, 2])
+ * בחינת השפעת צמצום החומרה על ידי אילוץ כניסה מוקדמת לרוויה
+ **/
+uint8_t hw_sigmoid_narrow_range(uint8_t input_x) {
+    uint8_t sign = (input_x >> 7) & 0x01;
+    uint8_t abs_x = input_x & 0x7F;
+
+    uint8_t interval_idx = 0;
+    uint32_t shift_add_result = 0;
+    uint32_t intercept_q1_10 = 0;
+
+    // מפענח מרווחים בעל פריסה צרה: מאלץ רוויה (הגעה לערך 1) כבר מ-2.0
+    if (abs_x >= 32) { interval_idx = 3; } // [2.0, infinity) - Early Saturation
+    else if (abs_x >= 24) { interval_idx = 2; } // [1.5, 2.0)
+    else if (abs_x >= 11) { interval_idx = 1; } // [0.6875, 1.5)
+    else { interval_idx = 0; } // [0.0, 0.6875)
+
+    // טבלת חיתוכים ורשת הזזות
+    switch (interval_idx) {
+    case 0: // שיפוע 15
+        intercept_q1_10 = 64 << 3;
+        shift_add_result = (abs_x << 3) + (abs_x << 2) + (abs_x << 1) + abs_x;
+        break;
+    case 1: // שיפוע 12
+        intercept_q1_10 = 69 << 3;
+        shift_add_result = (abs_x << 3) + (abs_x << 2);
+        break;
+    case 2: // 
+        intercept_q1_10 = 81 << 3;
+        shift_add_result = (abs_x << 3);
+        break;
+    case 3: // הגעה לתחום שהחל ממנו הפונקציה מחושבת ל1 כך שהשיפוע שווה ל0
+        intercept_q1_10 = 128 << 3;
+        shift_add_result = 0;
+        break;
+    }
+
+    uint32_t mx_plus_c = shift_add_result + intercept_q1_10;
+    uint8_t sigma_abs_x = (uint8_t)(mx_plus_c >> 3);
+
+    if (sign == 1) {
+        sigma_abs_x = (~sigma_abs_x) + 1;
+        sigma_abs_x = sigma_abs_x & 0x7F;
+    }
+
+    if (sigma_abs_x > 128 && sign == 0) {
+        sigma_abs_x = 128;
+    }
+
+    return sigma_abs_x;
+}
+
+/*
+* פונקציות תרגום בין תוכנה לחומרה
+ * המרת המספרים העשרוניים לפורמט של 8 ביטים לפני הכניסה למעגל,
+ * ותרגום הפלט הבינארי מסוג פיקסדפוינט חזרה למספר עשרוני מסוג פלואט כדי שנוכל להשוות ולבדוק את התוצאה
+ **/
+float simulate_full_range_float(float x) {
+    // שלב א': חילוץ הסימן והערך המוחלט בתוכנה טרם ההמרה לחומרה
+    uint8_t sign = (x < 0.0f) ? 1 : 0;
+    float abs_x = (x < 0.0f) ? -x : x;
+
+    //  ועיגול למספר שלם (Q3.4 שלב ב': הכפלה ב-16 לייצוג שברי של 4 ביטים (פורמט 
+    int integer_part = (int)roundf(abs_x * 16.0f);
+
+    //    הגבלת הערך המקסימלי ל-127 למניעת גלישה ודריסה של ביט הסימן 
+    if (integer_part > 127) integer_part = 127;
+
+    // ושילובו עם הערך המוחלט MSBשלב ג': ביט הסימן יימצא במיקום ה
+    uint8_t input_hw = (sign << 7) | (integer_part & 0x7F);
+
+    // הפעלת החישוב בחומרה המדומה
+    uint8_t hw_output = hw_sigmoid_full_range(input_hw);
+
+    // (שלב ד': פענוח התוצאה – חלוקה ב-128 להמרה ממספר שלם לשבר עשרוני (7 ביטים לשבר
+    return hw_output / 128.0f;
+}
+
+float simulate_narrow_range_float(float x) {
+    uint8_t sign = (x < 0.0f) ? 1 : 0;
+    float abs_x = (x < 0.0f) ? -x : x;
+
+    int integer_part = (int)roundf(abs_x * 16.0f);
+    if (integer_part > 127) integer_part = 127;
+
+    uint8_t input_hw = (sign << 7) | (integer_part & 0x7F);
+    uint8_t hw_output = hw_sigmoid_narrow_range(input_hw);
+
+    return hw_output / 128.0f;
+}
+
+/*
+ * פונקציה ראשית (Testbench)
+ * השוואת ביצועים בין מודל הטווח המלא למודל הטווח הצר ביחס למתמטיקה התיאורטית.
+ **/
+int main() {
+    float test_points[] = { 0.0f, 0.8f, 1.8f, 2.5f, -3.0f, 4.5f };
+    int num_points = 6;
+
+    printf(" x      | HW Full Range [-5,5] | HW Narrow Range [-2,2] | True Math Sigmoid | Error (Full) | Error (Narrow)\n");
+    printf("----------------------------------------------------------------------------------------------------------------\n");
+
+    for (int i = 0; i < num_points; i++) {
+        float x = test_points[i];
+
+        // הפעלת סימולציה עבור שני מודלי החומרה ופונקציית הייחוס התיאורטית
+        float hw_full = simulate_full_range_float(x);
+        float hw_narrow = simulate_narrow_range_float(x);
+        float true_val = true_sigmoid(x);
+
+        // חישוב שגיאת ההמרה והקירוב לעומת הערך המתמטי האמיתי
+        float err_full = fabs(hw_full - true_val);
+        float err_narrow = fabs(hw_narrow - true_val);
+
+        printf("%6.2f | %20.4f | %22.4f | %17.4f | %12.4f | %14.4f\n",
+            x, hw_full, hw_narrow, true_val, err_full, err_narrow);
+    }
+
+    return 0;
+}
