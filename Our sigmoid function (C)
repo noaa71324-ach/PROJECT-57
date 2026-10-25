@@ -1,0 +1,204 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <math.h>
+#include <stdlib.h>
+#include <time.h>
+
+// פונקציית עזר להדפסת 8 ביטים בפורמט בינארי
+void print_binary_8b(uint8_t val) {
+    for (int i = 7; i >= 0; i--) {
+        printf("%d", (val >> i) & 1);
+        if (i == 4) printf("_");
+    }
+}
+
+// פונקציית הסיגמואיד המתמטית
+float true_sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+// מודל מאיץ החומרה
+// מקבל קלט של 8 ביטים בפורמט גודל וסימן ומחזיר פלט של 8 ביטים בפורמט Q1.7
+uint8_t hardware_sigmoid_accelerator(uint8_t input_x) {
+    // שלב 1: חילוץ ביט הסימן (הביט השמאלי ביותר) והערך המוחלט (7 הביטים האחרים)
+    uint8_t sign = (input_x >> 7) & 0x01;
+    uint8_t abs_x = input_x & 0x7F;
+
+    uint8_t interval_idx = 0;
+    uint32_t shift_add_result = 0;
+    uint32_t intercept_q1_10 = 0;
+
+    // שלב 2: מפענח המרווחים interval decoder
+    // בודק לאיזה מקטע מתוך 7 המקטעים שהוגדרו במאמר שייך הערך המוחלט של הקלט
+    if (abs_x >= 80) { interval_idx = 6; } // לערכים הגדולים מ5
+    else if (abs_x >= 64) { interval_idx = 5; } // לערכים בין 4 ל5
+    else if (abs_x >= 48) { interval_idx = 4; } // לערכים בין 3 ל4
+    else if (abs_x >= 36) { interval_idx = 3; } // לערכים בין 2.25 ל3
+    else if (abs_x >= 24) { interval_idx = 2; } // לערכים בין 1.5 ל2.25
+    else if (abs_x >= 11) { interval_idx = 1; } // לערכים בין 0.6875 ל1.5
+    else { interval_idx = 0; } // לערכים הקטנים מ0.6875
+
+    // שלב 3: רשת ה Shift Add וטבלת החיתוכים LUT
+    // חישוב הקירוב הליניארי בעזרת הזזות ביטים y = m*x + c
+    switch (interval_idx) {
+    case 0:
+        intercept_q1_10 = 64 << 3;
+        shift_add_result = (abs_x << 6) >> 2;
+        break;
+    case 1:
+        intercept_q1_10 = 69 << 3;
+        shift_add_result = ((abs_x << 6) >> 3) + ((abs_x << 6) >> 4);
+        break;
+    case 2:
+        intercept_q1_10 = 80 << 3;
+        shift_add_result = (abs_x << 6) >> 3;
+        break;
+    case 3:
+        intercept_q1_10 = 98 << 3;
+        shift_add_result = (abs_x << 6) >> 4;
+        break;
+    case 4:
+        intercept_q1_10 = 110 << 3;
+        shift_add_result = (abs_x << 6) >> 5;
+        break;
+    case 5:
+        intercept_q1_10 = 118 << 3;
+        shift_add_result = (abs_x << 6) >> 6;
+        break;
+    case 6:
+        intercept_q1_10 = 128 << 3;
+        shift_add_result = 0; // בתחום זה הפונקציה קבועה ושווה ל1
+        break;
+    }
+
+    // שלב 4: חיבור תוצאת השיפוע לקבוע החיתוך וחזרה לפורמט הפלט הרצוי Q1.7
+    uint32_t mx_plus_c_q1_10 = shift_add_result + intercept_q1_10;
+    uint8_t sigma_abs_x = mx_plus_c_q1_10 >> 3;
+
+    // שלב 5: טיפול בסימטריה conditional 2's complement
+    // אם המספר המקורי היה שלילי נחסר את התוצאה מ1
+    if (sign == 1) {
+        return 128 - sigma_abs_x;
+    }
+    else {
+        return sigma_abs_x;
+    }
+}
+
+int main() {
+    // אתחול מספר אקראי לדוגמה והגרלת קלט ממשי למשל בין 6- ל6
+    srand((unsigned int)time(NULL));
+    float original_float_input = ((float)rand() / (float)(RAND_MAX)) * 12.0f - 6.0f;
+
+    // המרת הקלט הממשי לפורמט fixed point בייצוג Q3.4
+    int integer_representation = (int)roundf(original_float_input * 16.0f);
+
+    uint8_t input_hw = 0;
+    if (integer_representation < 0) {
+        input_hw = (uint8_t)(-integer_representation);
+        input_hw = input_hw | 0x80; // הדלקת ביט הסימן במספר שלילי
+    }
+    else {
+        input_hw = (uint8_t)(integer_representation);
+    }
+
+    // הפעלת מאיץ החומרה
+    uint8_t hw_output = hardware_sigmoid_accelerator(input_hw);
+
+    // המרת פלט החומרה בחזרה למספר ממשי
+    float hw_float_result = hw_output / 128.0f;
+
+    // בדיקת השגיאה מול הסיגמואיד האמיתי תוך התחשבות בקלט לאחר הקוונטיזציה 
+    float quantized_input_float = (float)integer_representation / 16.0f;
+    float true_val = true_sigmoid(quantized_input_float);
+
+    float abs_error = fabsf(hw_float_result - true_val);
+    float fsr_error_percent = (abs_error / 1.0f) * 100.0f;
+
+    printf("--- Sigmoid Hardware Accelerator Simulation ---\n");
+    printf("Original Float Input    : %f\n", original_float_input);
+    printf("Quantized Float Input   : %f\n", quantized_input_float);
+    printf("-----------------------------------------------\n");
+
+    printf("Hardware Input (Bin)    : ");
+    print_binary_8b(input_hw);
+    printf(" (Sign_magnitude)\n");
+
+    printf("Hardware Output (Bin)   : ");
+    print_binary_8b(hw_output);
+    printf(" (Q1.7)\n");
+
+    printf("-----------------------------------------------\n");
+    printf("Hardware Float Result   : %f\n", hw_float_result);
+    printf("True Mathematical Result: %f (Based on Quantized Input)\n", true_val);
+    printf("Absolute Error          : %f\n", abs_error);
+    printf("Absolute Error %% (FSR)  : %.4f%%\n", fsr_error_percent);
+    printf("-----------------------------------------------\n");
+
+    // פתיחת קובץ לכתיבת וקטורי הבדיקה שיועברו לסימולציית הורילוג
+    FILE* fp = fopen("test_vectors.txt", "w");
+    if (fp == NULL) {
+        printf("Error opening file!\n");
+        return 1;
+    }
+
+    float max_error = 0.0f;
+    uint8_t worst_case_input = 0;
+
+    printf("Running Exhaustive Hardware Simulation for all 256 inputs\n");
+
+    // ריצה על כל 256 הערכים האפשריים ל8 ביט
+    for (int i = 0; i < 256; i++) {
+        uint8_t input_hw = (uint8_t)i;
+
+        // שחזור המספר הממשי מתוך הקלט החומרתי sign_magnitude -> float
+        uint8_t sign = (input_hw >> 7) & 0x01;
+        uint8_t abs_val = input_hw & 0x7F;
+        float quantized_input_float = (float)abs_val / 16.0f; // Q3.4ייצוב ב
+        if (sign == 1) {
+            quantized_input_float = -quantized_input_float;
+        }
+
+        // הפעלת מאיץ החומרה
+        uint8_t hw_output = hardware_sigmoid_accelerator(input_hw);
+
+        // כתיבת זוגות קלט פלט בינאריים לקובץ עבור ה testbench
+        for (int b = 7; b >= 0; b--) fprintf(fp, "%d", (input_hw >> b) & 1);
+        fprintf(fp, "_");
+        for (int b = 7; b >= 0; b--) fprintf(fp, "%d", (hw_output >> b) & 1);
+        fprintf(fp, "\n");
+
+        // חישוב השגיאה לעומת הסיגמואיד האמיתי
+        float hw_float_result = hw_output / 128.0f;
+        float true_val = true_sigmoid(quantized_input_float);
+        float abs_error = fabsf(hw_float_result - true_val);
+
+        // עדכון השגיאה המקסימלית
+        if (abs_error > max_error) {
+            max_error = abs_error;
+            worst_case_input = input_hw;
+        }
+    }
+
+    fclose(fp);
+
+    printf("Simulation Complete. Test vectors saved to 'test_vectors.txt'\n");
+    printf("-----------------------------------------------\n");
+    printf("Maximum Absolute Error  : %f\n", max_error);
+    printf("Max Error %% (FSR)       : %.4f%%\n", (max_error / 1.0f) * 100.0f);
+    printf("Worst Case Input - Hex: 0x%02X | Dec: %d | Bin: ", worst_case_input, worst_case_input);
+    print_binary_8b(worst_case_input);
+    printf("\n");
+    printf("-----------------------------------------------\n");
+
+    // בדיקה האם השגיאה המקסימלית עומדת ביעד שתוכנן
+    // 0.0078125 * 1.2 = 0.009375
+    if (max_error <= 0.009375f) {
+        printf("SUCCESS: Hardware logic meets the 7-bit architecture targets (< 1.2 LSB error).\n");
+    }
+    else {
+        printf("WARNING: Maximum error exceeds hardware tolerances.\n");
+    }
+
+    return 0;
+}
