@@ -1,0 +1,7 @@
+tmp_backups/
+sim/
+*.o
+*.elf
+test_vectors.txt
+data/
+_pycache_/
