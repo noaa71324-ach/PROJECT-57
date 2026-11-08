@@ -97,8 +97,7 @@ module sigmoid_57 (
   assign abs_x = x_reg[6:0];
 
   // Domain interval decoder, comparator free (based on Eq. 23 of the paper).
-  // s[1] and s[2] are completed so all of |x| >= 0.6875 and [2, 2.25) are covered,
-  // matching the intervals of Table II and the C model.
+  // Matching the intervals of Table II and the C model.
   assign s[1] = abs_x[4] | (abs_x[3] & (abs_x[2] | (abs_x[1] & abs_x[0]))); // 0.6875 <= |x|
   assign s[2] = abs_x[5] | (abs_x[3] & abs_x[4]);                           // 1.5    <= |x|
   assign s[3] = (abs_x[2] | abs_x[3]) & ~abs_x[4] & abs_x[5];               // 2.25   <= |x|
