@@ -34,6 +34,7 @@ module sigmoid_57 (
   // Combinational datapath, same names as software_sigmoid_model() in the C code
   logic        sign;
   logic [6:0]  abs_x;
+  logic [6:1]  s;
   logic [2:0]  interval_idx;
   logic [12:0] abs_x_q1_10;
   logic [12:0] shift_add_result;
@@ -95,16 +96,20 @@ module sigmoid_57 (
   assign sign  = x_reg[7];
   assign abs_x = x_reg[6:0];
 
-  // Interval decoder (7 PWL segments)
-  always_comb begin
-    if      (abs_x >= 7'd80) interval_idx = 3'd6;
-    else if (abs_x >= 7'd64) interval_idx = 3'd5;
-    else if (abs_x >= 7'd48) interval_idx = 3'd4;
-    else if (abs_x >= 7'd36) interval_idx = 3'd3;
-    else if (abs_x >= 7'd24) interval_idx = 3'd2;
-    else if (abs_x >= 7'd11) interval_idx = 3'd1;
-    else                     interval_idx = 3'd0;
-  end
+  // Domain interval decoder, comparator free (based on Eq. 23 of the paper).
+  // s[1] and s[2] are completed so all of |x| >= 0.6875 and [2, 2.25) are covered,
+  // matching the intervals of Table II and the C model.
+  assign s[1] = abs_x[4] | (abs_x[3] & (abs_x[2] | (abs_x[1] & abs_x[0]))); // 0.6875 <= |x|
+  assign s[2] = abs_x[5] | (abs_x[3] & abs_x[4]);                           // 1.5    <= |x|
+  assign s[3] = (abs_x[2] | abs_x[3]) & ~abs_x[4] & abs_x[5];               // 2.25   <= |x|
+  assign s[4] = abs_x[4] & abs_x[5] & ~abs_x[6];                            // 3      <= |x|
+  assign s[5] = ~abs_x[4] & ~abs_x[5] & abs_x[6];                           // 4      <= |x|
+  assign s[6] = (abs_x[4] | abs_x[5]) & abs_x[6];                           // 5      <= |x|
+
+  // Priority encoder, s[6] has the highest priority
+  assign interval_idx[2] = s[6] | s[5] | s[4];
+  assign interval_idx[1] = s[6] | (~(s[4] | s[5]) & (s[2] | s[3]));
+  assign interval_idx[0] = ~s[6] & (s[5] | (~s[4] & (s[3] | (~s[2] & s[1]))));
 
   assign abs_x_q1_10 = {abs_x, 6'b0}; // abs_x << 6
 
