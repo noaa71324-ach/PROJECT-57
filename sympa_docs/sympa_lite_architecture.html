@@ -1,0 +1,371 @@
+<title>SYMPA-Lite Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  /* Layout: one reading column; each figure is a white "datasheet" plate with an LTR drawing and an RTL caption. */
+  :root {
+    --bg: #f3f6f7;
+    --surface: #ffffff;
+    --fg: #15212b;
+    --muted: #586673;
+    --line: #c8d2da;
+    --bar: #dfe6ec;
+    --accent: #0b7a62;
+    --accent-soft: #d6efe7;
+    --font-he: "Heebo", "Arial Hebrew", "Segoe UI", system-ui, sans-serif;
+    --font-draw: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1519; --surface: #161e24; --fg: #e3e9ed; --muted: #93a2ae;
+      --line: #2d3943; --bar: #24303a; --accent: #45c7a4; --accent-soft: #163a31;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1519; --surface: #161e24; --fg: #e3e9ed; --muted: #93a2ae;
+    --line: #2d3943; --bar: #24303a; --accent: #45c7a4; --accent-soft: #163a31;
+    color-scheme: dark;
+  }
+
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-he); font-size: 16px; line-height: 1.6; }
+  .page {
+    max-width: 1060px; margin: 0 auto;
+    padding-block: 36px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid; gap: 28px;
+  }
+  header { display: grid; gap: 8px; }
+  .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+  h1 { font-size: clamp(26px, 4vw, 36px); line-height: 1.2; margin: 0; font-weight: 700; text-wrap: balance; }
+  h2 { font-size: 20px; margin: 0; font-weight: 700; text-wrap: balance; }
+  p { margin: 0; max-width: 68ch; }
+  .muted { color: var(--muted); }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 0; }
+  .facts div { background: var(--surface); padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
+  .facts dt { font-size: 13px; color: var(--muted); }
+  .facts dd { margin: 0; font-family: var(--font-mono); font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; direction: ltr; text-align: right; }
+
+  section { display: grid; gap: 12px; }
+  figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; display: grid; }
+  .plate { overflow-x: auto; padding: 16px; direction: ltr; }
+  .plate svg { display: block; width: 100%; height: auto; color: var(--fg); font-family: var(--font-draw); }
+  .plate svg.wide { min-width: 760px; }
+  .plate svg.mid { min-width: 680px; }
+  figcaption { border-top: 1px solid var(--line); padding: 12px 16px; font-size: 15px; color: var(--muted); }
+  figcaption b { color: var(--fg); font-weight: 600; }
+
+  /* drawing classes (page CSS styles the inline SVG) */
+  svg text { fill: currentColor; font-size: 13px; }
+  svg .sm { font-size: 11px; fill: var(--muted); }
+  svg .mono { font-family: var(--font-mono); }
+  svg .b { font-weight: 600; }
+  svg .big { font-size: 24px; }
+  svg .box { fill: var(--surface); stroke: currentColor; stroke-width: 1.3; }
+  svg .acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+  svg .bound { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 6 5; }
+  svg .w { fill: none; stroke: currentColor; stroke-width: 1.3; }
+  svg .bus { fill: none; stroke: currentColor; stroke-width: 3; }
+  svg .wa { fill: none; stroke: var(--accent); stroke-width: 2.2; }
+  svg .mk { fill: currentColor; }
+  svg .mka { fill: var(--accent); }
+  svg .bar { fill: var(--bar); stroke: none; }
+  svg .bara { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg .axis { stroke: var(--muted); stroke-width: 1; }
+  svg .dot { fill: currentColor; }
+
+  code { font-family: var(--font-mono); font-size: .9em; direction: ltr; unicode-bidi: isolate; }
+  .note { font-size: 14px; color: var(--muted); border-inline-start: 3px solid var(--line); padding-inline-start: 12px; }
+</style>
+
+<div class="page" dir="rtl" lang="he">
+  <header>
+    <div class="eyebrow">Medus et al., IEEE Access 2019 · Fashion-MNIST 784-64-10</div>
+    <h1>מבנה המאיץ: SYMPA-Lite עם הסיגמואיד שלנו</h1>
+    <p class="muted">שלושה שרטוטים של המימוש המתוכנן: המאיץ כולו בתוך פלטפורמת K5-XBOX, יחידת NPE אחת, וציר הזמן של סיווג תמונה אחת.</p>
+  </header>
+
+  <dl class="facts">
+    <div><dt>רשת</dt><dd>784-64-10</dd></div>
+    <div><dt>יחידות NPE</dt><dd>64</dd></div>
+    <div><dt>מחזורים לתמונה</dt><dd>≈ 870</dd></div>
+    <div><dt>זמן ב-50MHz</dt><dd>≈ 17 µs</dd></div>
+    <div><dt>דיוק 8 ביט + הסיגמואיד שלנו</dt><dd>85.93%</dd></div>
+    <div><dt>דיוק float</dt><dd>85.94%</dd></div>
+  </dl>
+
+  <!-- ===================== Figure 1 ===================== -->
+  <section>
+    <h2>1. המאיץ: זרימת הנתונים</h2>
+    <figure>
+      <div class="plate">
+        <svg class="wide" viewBox="0 0 990 560" role="img" aria-label="Block diagram: pixels from system memory enter an input mux and are broadcast one byte per cycle to 64 NPEs that read weights from a shared weight bank. Results load into a shift-register chain; for layer 1 they pass through requantize and sigmoid_57 and feed back as layer 2 input; for layer 2 the raw logits go to argmax and the class returns to the host registers.">
+          <defs>
+            <marker id="f1m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="f1ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mka" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+
+          <!-- host side -->
+          <text x="105" y="36" text-anchor="middle" class="sm mono">K5-XBOX</text>
+          <rect class="box" x="20" y="50" width="170" height="60" rx="6"/>
+          <text x="105" y="76" text-anchor="middle" class="b">CPU</text>
+          <text x="105" y="96" text-anchor="middle" class="sm">C driver</text>
+          <rect class="box" x="20" y="225" width="170" height="60" rx="6"/>
+          <text x="105" y="251" text-anchor="middle" class="b">System memory</text>
+          <text x="105" y="271" text-anchor="middle" class="sm">image bytes</text>
+
+          <!-- accelerator boundary -->
+          <rect class="bound" x="225" y="14" width="750" height="536" rx="10"/>
+          <text x="240" y="540" class="sm mono">sympa_xlr · our accelerator</text>
+
+          <!-- control row -->
+          <rect class="box" x="430" y="50" width="170" height="50" rx="6"/>
+          <text x="515" y="72" text-anchor="middle" class="b mono">host_regs</text>
+          <text x="515" y="90" text-anchor="middle" class="sm">APB registers</text>
+          <rect class="box" x="700" y="50" width="190" height="50" rx="6"/>
+          <text x="795" y="72" text-anchor="middle" class="b mono">sympa_ctrl</text>
+          <text x="795" y="90" text-anchor="middle" class="sm">FSM: layer · row · opcode</text>
+
+          <line class="w" x1="190" y1="72" x2="428" y2="72" marker-end="url(#f1m)"/>
+          <text x="310" y="65" text-anchor="middle" class="sm">write START</text>
+          <line class="w" x1="430" y1="92" x2="192" y2="92" marker-end="url(#f1m)"/>
+          <text x="310" y="108" text-anchor="middle" class="sm">read class, cycles</text>
+          <line class="w" x1="600" y1="75" x2="698" y2="75" marker-end="url(#f1m)"/>
+          <text x="650" y="67" text-anchor="middle" class="sm">start</text>
+          <line class="w" x1="795" y1="100" x2="795" y2="118" marker-end="url(#f1m)"/>
+          <text x="805" y="113" class="sm">row address</text>
+
+          <!-- weight bank -->
+          <rect class="box" x="430" y="120" width="460" height="40" rx="4"/>
+          <text x="610" y="138" text-anchor="middle" class="b mono">weight_bank (M9K)</text>
+          <text x="610" y="153" text-anchor="middle" class="sm">1024 rows × 64 lanes × 8 bit · one lane per NPE</text>
+
+          <!-- broadcast bus -->
+          <polyline class="bus" points="310,230 310,182 822,182"/>
+          <text x="318" y="200" class="sm">broadcast</text>
+          <text x="318" y="214" class="sm">1 byte / cycle</text>
+
+          <!-- NPEs -->
+          <g>
+            <line class="w" x1="498" y1="160" x2="498" y2="198" marker-end="url(#f1m)"/>
+            <line class="w" x1="452" y1="182" x2="452" y2="198" marker-end="url(#f1m)"/>
+            <rect class="box" x="430" y="200" width="90" height="70" rx="6"/>
+            <text x="475" y="226" text-anchor="middle" class="b mono">NPE 63</text>
+            <text x="475" y="244" text-anchor="middle" class="sm">MAC 9×9</text>
+            <text x="475" y="260" text-anchor="middle" class="sm">acc 25b</text>
+          </g>
+          <g>
+            <line class="w" x1="608" y1="160" x2="608" y2="198" marker-end="url(#f1m)"/>
+            <line class="w" x1="562" y1="182" x2="562" y2="198" marker-end="url(#f1m)"/>
+            <rect class="box" x="540" y="200" width="90" height="70" rx="6"/>
+            <text x="585" y="226" text-anchor="middle" class="b mono">NPE 62</text>
+            <text x="585" y="244" text-anchor="middle" class="sm">MAC 9×9</text>
+            <text x="585" y="260" text-anchor="middle" class="sm">acc 25b</text>
+          </g>
+          <g>
+            <line class="w" x1="718" y1="160" x2="718" y2="198" marker-end="url(#f1m)"/>
+            <line class="w" x1="672" y1="182" x2="672" y2="198" marker-end="url(#f1m)"/>
+            <rect class="box" x="650" y="200" width="90" height="70" rx="6"/>
+            <text x="695" y="226" text-anchor="middle" class="b mono">NPE 61</text>
+            <text x="695" y="244" text-anchor="middle" class="sm">MAC 9×9</text>
+            <text x="695" y="260" text-anchor="middle" class="sm">acc 25b</text>
+          </g>
+          <text x="770" y="240" text-anchor="middle" class="b">···</text>
+          <g>
+            <line class="w" x1="868" y1="160" x2="868" y2="198" marker-end="url(#f1m)"/>
+            <line class="w" x1="822" y1="182" x2="822" y2="198" marker-end="url(#f1m)"/>
+            <rect class="box" x="800" y="200" width="90" height="70" rx="6"/>
+            <text x="845" y="226" text-anchor="middle" class="b mono">NPE 0</text>
+            <text x="845" y="244" text-anchor="middle" class="sm">MAC 9×9</text>
+            <text x="845" y="260" text-anchor="middle" class="sm">acc 25b</text>
+          </g>
+
+          <!-- SR chain -->
+          <line class="w" x1="475" y1="270" x2="475" y2="298" marker-end="url(#f1m)"/>
+          <line class="w" x1="585" y1="270" x2="585" y2="298" marker-end="url(#f1m)"/>
+          <line class="w" x1="695" y1="270" x2="695" y2="298" marker-end="url(#f1m)"/>
+          <line class="w" x1="845" y1="270" x2="845" y2="298" marker-end="url(#f1m)"/>
+          <text x="770" y="289" text-anchor="middle" class="sm">load at layer end</text>
+          <rect class="box" x="430" y="300" width="90" height="34" rx="4"/>
+          <text x="475" y="322" text-anchor="middle" class="mono">SR 63</text>
+          <rect class="box" x="540" y="300" width="90" height="34" rx="4"/>
+          <text x="585" y="322" text-anchor="middle" class="mono">SR 62</text>
+          <rect class="box" x="650" y="300" width="90" height="34" rx="4"/>
+          <text x="695" y="322" text-anchor="middle" class="mono">SR 61</text>
+          <rect class="box" x="800" y="300" width="90" height="34" rx="4"/>
+          <text x="845" y="322" text-anchor="middle" class="mono">SR 0</text>
+          <line class="w" x1="520" y1="317" x2="538" y2="317" marker-end="url(#f1m)"/>
+          <line class="w" x1="630" y1="317" x2="648" y2="317" marker-end="url(#f1m)"/>
+          <line class="w" x1="740" y1="317" x2="756" y2="317"/>
+          <text x="770" y="321" text-anchor="middle" class="b">···</text>
+          <line class="w" x1="784" y1="317" x2="798" y2="317" marker-end="url(#f1m)"/>
+          <text x="660" y="354" text-anchor="middle" class="sm">shift toward SR 0 → 1 value / cycle (SR 0 first)</text>
+
+          <!-- split after the chain -->
+          <polyline class="w" points="890,317 935,317 935,490 892,490" marker-end="url(#f1m)"/>
+          <line class="w" x1="935" y1="417" x2="892" y2="417" marker-end="url(#f1m)"/>
+          <circle class="dot" cx="935" cy="417" r="3"/>
+          <text x="914" y="409" text-anchor="middle" class="sm mono">L1</text>
+          <text x="914" y="482" text-anchor="middle" class="sm mono">L2</text>
+
+          <!-- activation path -->
+          <rect class="box" x="700" y="395" width="190" height="44" rx="6"/>
+          <text x="795" y="414" text-anchor="middle" class="b mono">requantize</text>
+          <text x="795" y="431" text-anchor="middle" class="sm mono">(acc+256)&gt;&gt;&gt;9 · sat ±127</text>
+          <line class="w" x1="700" y1="417" x2="652" y2="417" marker-end="url(#f1m)"/>
+          <text x="676" y="409" text-anchor="middle" class="sm mono">Q3.4</text>
+          <rect class="acc" x="470" y="395" width="180" height="44" rx="6"/>
+          <text x="560" y="414" text-anchor="middle" class="b mono">sigmoid_57</text>
+          <text x="560" y="431" text-anchor="middle" class="sm">PWL, 2 adders, no multiplier</text>
+          <polyline class="wa" points="470,417 310,417 310,284" marker-end="url(#f1ma)"/>
+          <text x="390" y="409" text-anchor="middle" class="sm mono">y Q1.7 (0..128)</text>
+          <text x="318" y="300" class="sm">layer 2 input</text>
+
+          <!-- output -->
+          <rect class="box" x="700" y="470" width="190" height="40" rx="6"/>
+          <text x="795" y="487" text-anchor="middle" class="b mono">argmax</text>
+          <text x="795" y="502" text-anchor="middle" class="sm">10 raw logits → class</text>
+          <polyline class="w" points="795,510 795,532 960,532 960,34 515,34 515,48" marker-end="url(#f1m)"/>
+          <text x="740" y="28" text-anchor="middle" class="sm">class 0..9, cycles</text>
+
+          <!-- input mux -->
+          <rect class="box" x="260" y="230" width="100" height="52" rx="6"/>
+          <text x="310" y="252" text-anchor="middle" class="b">input mux</text>
+          <text x="310" y="270" text-anchor="middle" class="sm">pixels | y</text>
+          <line class="w" x1="190" y1="255" x2="258" y2="255" marker-end="url(#f1m)"/>
+          <text x="224" y="247" text-anchor="middle" class="sm mono">mem_intf</text>
+          <text x="224" y="272" text-anchor="middle" class="sm">784 B</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>מה רואים:</b> כל פיקסל משודר לכל 64 יחידות ה-NPE באותו מחזור, וכל NPE מכפיל אותו במשקל שלו מה-<code>weight_bank</code>. בסוף שכבה 1 התוצאות נטענות לשרשרת ה-SR, יוצאות אחת-אחת דרך <code>requantize</code> ו-<code>sigmoid_57</code>, <b>וחוזרות לאותן יחידות NPE כקלט של שכבה 2</b> (החץ הירוק). בשכבה 2 התוצאות עוקפות את הסיגמואיד ועוברות ישר ל-<code>argmax</code>.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ===================== Figure 2 ===================== -->
+  <section>
+    <h2>2. יחידת NPE אחת</h2>
+    <figure>
+      <div class="plate">
+        <svg class="mid" viewBox="0 0 900 230" role="img" aria-label="One NPE: the 8-bit input is zero-extended to 9 bits and multiplied by the signed 8-bit weight in a 9 by 9 embedded multiplier; the 17-bit product is added to a 25-bit accumulator selected by an opcode mux that can load the bias; the accumulator feeds back for the next MAC and loads the SR register, which is chained to its neighbours.">
+          <defs>
+            <marker id="f2m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <text x="20" y="74" class="b mono">x_k</text>
+          <text x="20" y="90" class="sm">8b unsigned</text>
+          <line class="w" x1="100" y1="80" x2="138" y2="80" marker-end="url(#f2m)"/>
+          <rect class="box" x="140" y="60" width="100" height="40" rx="5"/>
+          <text x="190" y="79" text-anchor="middle" class="mono">{0, x}</text>
+          <text x="190" y="94" text-anchor="middle" class="sm">9b signed</text>
+          <line class="w" x1="240" y1="80" x2="278" y2="80" marker-end="url(#f2m)"/>
+
+          <text x="20" y="124" class="b mono">w_jk</text>
+          <text x="20" y="140" class="sm">8b signed · lane j</text>
+          <line class="w" x1="150" y1="130" x2="278" y2="130" marker-end="url(#f2m)"/>
+
+          <rect class="box" x="280" y="55" width="100" height="100" rx="6"/>
+          <text x="330" y="100" text-anchor="middle" class="big">×</text>
+          <text x="330" y="124" text-anchor="middle" class="sm">9×9 multiplier</text>
+          <text x="330" y="140" text-anchor="middle" class="sm">embedded</text>
+
+          <line class="w" x1="380" y1="105" x2="426" y2="105" marker-end="url(#f2m)"/>
+          <text x="403" y="97" text-anchor="middle" class="sm mono">17b</text>
+          <circle class="box" cx="450" cy="105" r="22"/>
+          <text x="450" y="112" text-anchor="middle" class="big">+</text>
+          <line class="w" x1="472" y1="105" x2="518" y2="105" marker-end="url(#f2m)"/>
+
+          <text x="580" y="22" text-anchor="middle" class="sm mono">b_j · 24b bias</text>
+          <line class="w" x1="580" y1="28" x2="580" y2="68" marker-end="url(#f2m)"/>
+          <rect class="box" x="520" y="70" width="120" height="70" rx="6"/>
+          <text x="580" y="92" text-anchor="middle" class="b mono">opcode</text>
+          <text x="580" y="110" text-anchor="middle" class="sm mono">BIAS: acc ← b</text>
+          <text x="580" y="126" text-anchor="middle" class="sm mono">MAC: acc ← acc+p</text>
+          <line class="w" x1="640" y1="105" x2="678" y2="105" marker-end="url(#f2m)"/>
+
+          <rect class="box" x="680" y="80" width="90" height="50" rx="5"/>
+          <text x="725" y="102" text-anchor="middle" class="b mono">acc</text>
+          <text x="725" y="119" text-anchor="middle" class="sm">25b register</text>
+
+          <line class="w" x1="770" y1="105" x2="818" y2="105" marker-end="url(#f2m)"/>
+          <circle class="dot" cx="790" cy="105" r="3"/>
+          <text x="806" y="97" text-anchor="middle" class="sm">load</text>
+          <polyline class="w" points="790,105 790,200 450,200 450,129" marker-end="url(#f2m)"/>
+          <text x="620" y="216" text-anchor="middle" class="sm">feedback: the next pixel adds to the same acc</text>
+
+          <rect class="box" x="820" y="85" width="60" height="40" rx="5"/>
+          <text x="850" y="110" text-anchor="middle" class="b mono">SR</text>
+          <line class="w" x1="850" y1="40" x2="850" y2="83" marker-end="url(#f2m)"/>
+          <text x="850" y="34" text-anchor="middle" class="sm">from SR j+1</text>
+          <line class="w" x1="850" y1="125" x2="850" y2="168" marker-end="url(#f2m)"/>
+          <text x="850" y="184" text-anchor="middle" class="sm">to SR j−1</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>מה רואים:</b> ה-NPE הוא נוירון חומרה אחד. הקלט (0..128) מורחב ל-9 ביט כדי להיכנס למכפל 9×9 המובנה של ה-MAX 10, שלא נספר במגבלת 20K LE. בתחילת השכבה ה-<code>opcode</code> טוען את ה-bias, ואחר כך בכל מחזור נוספת מכפלה אחת. 25 ביט ב-accumulator מספיקים למקרה הגרוע: 784 × 128 × 128 ועוד bias.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ===================== Figure 3 ===================== -->
+  <section>
+    <h2>3. סיווג תמונה אחת לאורך הזמן</h2>
+    <figure>
+      <div class="plate">
+        <svg class="mid" viewBox="0 0 900 260" role="img" aria-label="Timeline to scale: cycles 1 to 785 broadcast 784 pixels while all 64 NPEs do layer 1. Around cycle 790 the 64 results shift out through requantize and sigmoid_57 for 64 cycles while NPEs 0 to 9 compute layer 2. The last 10 cycles pass the logits to argmax. Total about 870 cycles, about 17 microseconds at 50 megahertz.">
+          <!-- scale: x = 150 + 0.82 * cycle -->
+          <text x="863" y="24" text-anchor="end" class="b mono">≈ 870 cycles ≈ 17 µs @ 50 MHz</text>
+
+          <text x="140" y="64" text-anchor="end" class="sm">input bus</text>
+          <text x="140" y="109" text-anchor="end" class="sm">NPE array</text>
+          <text x="140" y="154" text-anchor="end" class="sm">SR → sigmoid_57</text>
+          <text x="140" y="199" text-anchor="end" class="sm">argmax</text>
+
+          <!-- row 1: input bus -->
+          <rect class="bar" x="151" y="47" width="643" height="26" rx="3"/>
+          <text x="472" y="64" text-anchor="middle" class="mono">pixels x0 … x783 (from memory)</text>
+          <rect class="bara" x="799" y="47" width="53" height="26" rx="3"/>
+          <text x="825" y="64" text-anchor="middle" class="sm mono">y0…63</text>
+
+          <!-- row 2: NPE array -->
+          <rect class="bar" x="150" y="92" width="644" height="26" rx="3"/>
+          <text x="472" y="109" text-anchor="middle" class="mono">layer 1: bias + 784 MAC in all 64 NPEs</text>
+          <rect class="bar" x="799" y="92" width="54" height="26" rx="3"/>
+          <text x="826" y="109" text-anchor="middle" class="sm mono">L2</text>
+
+          <!-- row 3: SR -> sigmoid -->
+          <text x="790" y="154" text-anchor="end" class="sm">64 values shift out → requantize → sigmoid_57</text>
+          <rect class="bara" x="796" y="137" width="53" height="26" rx="3"/>
+
+          <!-- row 4: argmax -->
+          <text x="848" y="199" text-anchor="end" class="sm">10 logits → class</text>
+          <rect class="bar" x="854" y="182" width="10" height="26" rx="2"/>
+
+          <!-- axis -->
+          <line class="axis" x1="150" y1="226" x2="864" y2="226"/>
+          <line class="axis" x1="150" y1="222" x2="150" y2="230"/>
+          <line class="axis" x1="314" y1="222" x2="314" y2="230"/>
+          <line class="axis" x1="478" y1="222" x2="478" y2="230"/>
+          <line class="axis" x1="642" y1="222" x2="642" y2="230"/>
+          <line class="axis" x1="794" y1="222" x2="794" y2="230"/>
+          <line class="axis" x1="863" y1="222" x2="863" y2="230"/>
+          <text x="150" y="244" text-anchor="middle" class="sm mono">0</text>
+          <text x="314" y="244" text-anchor="middle" class="sm mono">200</text>
+          <text x="478" y="244" text-anchor="middle" class="sm mono">400</text>
+          <text x="642" y="244" text-anchor="middle" class="sm mono">600</text>
+          <text x="794" y="244" text-anchor="middle" class="sm mono">785</text>
+          <text x="863" y="244" text-anchor="middle" class="sm mono">870</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>מה רואים:</b> השרטוט בקנה מידה אמיתי. כ-90% מהזמן הולך לשכבה 1, שבה 784 פיקסלים עוברים לכל 64 יחידות ה-NPE במקביל. שכבה 2 קצרה, כי היא מקבלת רק 64 קלטים, והם מגיעים ישר מהסיגמואיד בלי לחזור לזיכרון. המספר לפי משוואה 12 של Medus: (784+1) + (64+1) + 10, ועוד כמה מחזורי השהיה.
+      </figcaption>
+    </figure>
+  </section>
+
+</div>
