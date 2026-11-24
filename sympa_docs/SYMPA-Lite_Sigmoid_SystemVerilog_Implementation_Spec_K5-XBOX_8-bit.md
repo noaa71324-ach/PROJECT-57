@@ -1,6 +1,6 @@
 # SYMPA-Lite Sigmoid: SystemVerilog Implementation Spec (K5-XBOX, 8-bit)
 
-Nov 22, 2026 · @sigal · Draft v0.5
+Nov 22, 2026 · @sigal · Draft v0.6
 
 ## 1. Purpose and scope
 
@@ -8,7 +8,7 @@ Build SYMPA-Lite Sigmoid: an 8-bit, inference-only SystemVerilog accelerator for
 
 This spec starts from the SYMPA-Lite example spec (16 Nov 2026). Where the two differ, this spec wins for our project. "Must" is checked at acceptance (section 11); "should" is recommended.
 
-**In scope:** sympa\_core RTL, the K5-XBOX wrapper sympa\_xlr, the Python quantizer and bit-exact golden model (done), a C driver and C reference model, unit and system testbenches, and qsyn\_xlr synthesis.
+**In scope:** sympa\_core RTL, the K5-XBOX wrapper sympa\_xlr, the Python quantizer and accuracy comparison in quant\_vs\_ideal.py (done), a C driver and C reference model, unit and system testbenches, and qsyn\_xlr synthesis.
 
 **Out of scope for v1:** on-chip training, convolution, floating point, run-time topology changes, and the example's UART link, demo ROM, 7-segment display and PLL.
 
@@ -48,7 +48,7 @@ Baseline: sigmoid\_57 alone synthesizes to 90 LEs, no memory and no multipliers,
 
 ## 3. Parameters and number formats
 
-Arithmetic is exact integer, and the golden model reproduces every output bit. The REF\_FMNIST values come from the Python model (`mlp_bit_accurate.py`, H = 64); all parameters live in a generated `sympa_cfg_pkg.sv`.
+Arithmetic is exact integer, so a bit-exact model can reproduce every output bit. The REF\_FMNIST values come from the Python model (`quant_vs_ideal.py`, H = 64). The npe opcodes live in `sympa_pkg.sv`; the RTL built so far takes the other values as module parameters, and `sympa_cfg_pkg.sv` will collect them when `sympa_core` is built.
 
 | Parameter | REF\_FMNIST | REF\_TINY | Meaning |
 | --- | --- | --- | --- |
@@ -87,7 +87,7 @@ Arithmetic is exact integer, and the golden model reproduces every output bit. T
 
 **Accumulator width rule (must be checked at elaboration).** For every layer, ACC\_W ≥ 1 + ceil(log2(128 · 128 · N\[i−1\] + 2^15)). For 784 inputs this gives 25. sympa\_core must `$error` at elaboration if the rule fails, if any N\[i\] > N\_NPE, or if OUT\_FIFO\_DEPTH < N\[L\].
 
-**Quantization recipe** (`quant_vs_ideal.py`, `mlp_bit_accurate.py`)
+**Quantization recipe** (`quant_vs_ideal.py`)
 
 1. Train the float MLP with a sigmoid hidden layer (PyTorch, Adam, 5 epochs).
 2. Map each input pixel p (0..255) to x = (256p + 255) div 510, which equals round(p · 128 / 255). The C driver does this before the image reaches the accelerator.
@@ -105,25 +105,27 @@ The design is one board-independent core under a thin platform wrapper, with one
 Only sympa\_xlr changes if the platform interface turns out different from section 8; everything under sympa\_core is tested on its own.
 
 ```text
-rtl/
-  sympa_pkg.sv        opcodes, token struct, latency constants (T_NPE, T_AFB)
-  sympa_cfg_pkg.sv    GENERATED: section 3 parameters
-  sympa_xlr.sv        K5-XBOX wrapper (section 8)
-  sympa_xlr.f         file list for simulation and qsyn_xlr
+hw/xlrs/sympa_xlr/        status
+  sympa_pkg.sv            npe opcodes OP_NOP ... OP_SHIFT                     built
+  sympa_cfg_pkg.sv        section 3 parameters                                later
+  sympa_xlr.sv            K5-XBOX wrapper (section 8)                         later
+  sympa_xlr.f             file list for simulation and qsyn_xlr               later
     sympa_core.sv
-      sympa_ctrl.sv   FSM, op sequencer, input mux, cycle counter
-      npe_array.sv    broadcast register, weight_bank, N_NPE x npe, SR chain
-        weight_bank.sv  dual-port RAM, N_NPE*8 wide, written through wr_*
-        npe.sv
-      afb.sv          requantize + sigmoid_core, or RAW pass-through
+      sympa_ctrl.sv       FSM, op sequencer, input mux, cycle counter
+      npe_array.sv        broadcast register, weight_mem, N_NPE x npe, SR chain
+        weight_mem.sv     dual-port RAM, N_NPE*8 wide, written through wr_*  built
+        npe.sv            one neuron: bias, MAC, SR register                  built
+      afb.sv              requantize + sigmoid_core, or RAW pass-through
         requantize.sv
-        sigmoid_core.sv  datapath of sigmoid_57, unchanged
-      sync_fifo.sv    output FIFO
+        sigmoid_core.sv   datapath of sigmoid_57, unchanged
+      sync_fifo.sv        output FIFO
       argmax.sv
-tb/       unit and system testbenches, register and memory models
-tools/    quant_vs_ideal.py, mlp_bit_accurate.py (quantizer, golden model, weights.hex)
-data/     weights.hex, golden vectors (generated)
+  linear_layer.sv         step-1 test block: weight_mem + 64 npe + layer 1    built
+  tb/                     one deterministic testbench per module (section 10)
+sympa_docs/               this spec, quant_vs_ideal.py, architecture figures
 ```
+
+`linear_layer.sv` is a stepping stone, not part of the final tree. It runs only layer 1 (section 7, steps 2 and 3) from a `start` pulse, so the datapath could be tested at full size before the SR chain and the AFB exist; its SR inputs are tied to 0. When `sympa_core` is built, its datapath moves into `npe_array` and its sequence into `sympa_ctrl`.
 
 ## 5. sympa\_core ports
 
@@ -149,7 +151,7 @@ sympa\_core keeps the example's board-independent ports, so it can be written an
 
 Every NPE reads the same weight-bank row in the same cycle, so one row holds one weight index for all units, one byte lane per NPE.
 
-**6.1 weight\_bank.** Simple dual-port RAM, MEM\_DEPTH × (N\_NPE · 8) bits, read latency RAM\_LAT. The wrapper writes it row by row through the wr\_\* port when the C program loads the weights (section 8); testbenches may preload it from `weights.hex` with `$readmemh`. Lane j drives NPE j. As in Medus, the bias comes first in each layer, so it loads before the first MAC. Lanes of units j ≥ N\[i\] hold 0.
+**6.1 weight\_mem.** Simple dual-port RAM, MEM\_DEPTH × (N\_NPE · 8) bits, read latency RAM\_LAT = 2 (registered address, registered output, no reset, so Quartus maps it to M9K). The wrapper writes it row by row through the wr\_\* port when the C program loads the weights (section 8); testbenches write it through the same port. Lane j drives NPE j. As in Medus, the bias comes first in each layer, so it loads before the first MAC. Lanes of units j ≥ N\[i\] hold 0.
 
 | Rows (REF\_FMNIST) | Content |
 | --- | --- |
@@ -253,34 +255,37 @@ The speedup is the C reference model's time on the platform CPU divided by the a
 2. Write IMG\_ADDR and OUT\_ADDR, then write START = 2.
 3. Poll DONE, then read RESULT and CYCLES; the 10 logits are at OUT\_ADDR.
 
-**C reference model.** The same integer network in C, using `mlp_weights.h` exported by `mlp_bit_accurate.py`: 50,816 MACs per image, the requantize shift, and the sigmoid\_57 arithmetic, as in `software_sigmoid_model()`. It must return the same class as the accelerator for every test image.
+**C reference model.** The same integer network in C, using `mlp_weights.h` exported from the frozen Python weights (export still to be written): 50,816 MACs per image, the requantize shift, and the sigmoid\_57 arithmetic, as in `software_sigmoid_model()`. It must return the same class as the accelerator for every test image.
 
 **Measurement.** Use the platform cycle counter as xmemcpy\_ref.c does: ENABLE\_CYCLE\_COUNT, RESET\_CYCLE\_COUNT, then GET\_CYCLE\_COUNT\_START and GET\_CYCLE\_COUNT\_END around the call, reported as K5 effective cycles (a 32-bit counter read by get\_cycle\_count in k5\_utils\_lib.h). The software-only result is divided by 8, because the K5 core runs 8 threads and the reference uses one. The XON and XOFF macros, set by launch\_k5\_app -ccd1 XON, choose the path. Report the C model's cycles, the accelerator call's cycles (image fetch and logit write included), the core's CYCLES, and the speedup; report the one-time weight load separately.
 
 ## 10. Verification plan
 
-Every block is checked against vectors from the Python golden model before it joins the next level, so a mismatch points at one block.
+Every module gets a short deterministic testbench before it joins the next level, so a mismatch points at one block (supervisor's request). Inputs and weights follow simple rules, so each expected value is a hand-checkable formula written next to its check. Each testbench prints ok or FAIL per check and ends with one PASS or FAIL line.
 
-**Golden data.** One frozen weight set (H = 64) exported by `mlp_bit_accurate.py`: weights.hex, mlp\_weights.h, and for 100 test images the input bytes, sigmoid inputs z, sigmoid outputs y, the 10 logits and the class.
+**Run** (Xcelium, from `sympa_xlr/tb`): `xrun -sv -timescale 1ns/1ps ../sympa_pkg.sv ../npe.sv ../weight_mem.sv ../linear_layer.sv tb_<name>.sv -top tb_<name>`
 
-| Level | Test | Pass condition |
-| --- | --- | --- |
-| sigmoid\_core | All 255 legal inputs | Equal to the Python table, which already matches the sigmoid\_57 RTL bit for bit |
-| requantize | Random accumulators plus edges: half-way ties, ±127 saturation, the most negative accumulator | Equal to the Python formula |
-| npe | Directed: bias load, 784 MACs, LOAD\_SR, SHIFT, bubbles between MACs | acc and sr equal to a NumPy reference |
-| weight\_bank | Read after $readmemh and after a wr\_\* write, RAM\_LAT = 2 | Data in the right lane at the right cycle |
-| argmax, sync\_fifo | Ties, all equal, maximum at index 0 and 9, output stalls | Lowest index on ties; no lost logit |
-| sympa\_core, REF\_TINY | 4-8-3 network, random weights | Every logit bit-exact; quick to debug |
-| sympa\_core, REF\_FMNIST | The 100 golden images | Every logit bit-exact; class equal; cycles within 5% of section 7 |
-| sympa\_xlr | Register model + memory model for mem\_intf | Same classes as the core test through host\_regs |
-| Synthesis | `qsyn_xlr sympa_xlr -all` | Section 2 constraints met |
+| Level | Test | Pass condition | Status |
+| --- | --- | --- | --- |
+| npe | `tb_npe`: positive and negative bias, MACs, LOAD\_SR, SHIFT, NOP, 784-MAC worst cases (−12,877,824 and 12,777,471) | 17 hand-computed checks | PASS |
+| weight\_mem | `tb_weight_mem`: 3 lanes × 8 rows, write then read, RAM\_LAT = 2 | 9 checks: right lane, right cycle | PASS |
+| linear\_layer 4×3 | `tb_linear_layer`: biases 5, −100, 1000; inputs with and without gaps; all-zero inputs; x = 128 | sums equal the hand formulas; 9 cycles from start to done | PASS |
+| linear\_layer 784×64 | `tb_linear_layer_full`: bias\_j = 100j − 3200; set A w = j − 32 with x = 1 and x = 128; set B w = 2 only at input 10j + 5, x = k mod 128 | all 64 neurons equal the formula; 789 cycles | PASS |
+| SR chain | LOAD\_SR, then 64 SHIFTs | values leave in order 0, 1, 2 … | to do |
+| sigmoid\_core | all 255 legal inputs | equal to the sigmoid\_57 table | to do |
+| requantize | half-way ties, ±127 saturation, the most negative accumulator | equal to the section 3 formula | to do |
+| argmax, sync\_fifo | ties, all equal, maximum at index 0 and 9, output stalls | lowest index on ties; no lost logit | to do |
+| sympa\_core, REF\_TINY | 4-8-3 network with fixed small weights | every logit equal to the hand computation | to do |
+| sympa\_core, REF\_FMNIST | test images with logits and class from Python (export still to be written) | every logit bit-exact; class equal; cycles within 5% of section 7 | to do |
+| sympa\_xlr | register model + memory model for mem\_intf | same classes as the core test, through host\_regs | to do |
+| Synthesis | `qsyn_xlr sympa_xlr -all` | section 2 constraints met | to do |
 
 ## 11. Acceptance criteria
 
 The design is accepted when all six hold; the first is already met.
 
-1. Integer golden model within 1 percentage point of float on the 10,000 test images (met: 85.93% against 85.94%).
-2. sympa\_core gives bit-exact logits and the same class for all 100 golden images.
+1. The 8-bit model in quant\_vs\_ideal.py within 1 percentage point of float on the 10,000 test images (met: 85.93% against 85.94%).
+2. sympa\_core gives bit-exact logits and the same class for the Python test images of section 10.
 3. `qsyn_xlr sympa_xlr -all` passes at 50 MHz with at most 20K LEs and the weight bank in M9K.
 4. Cycles per image within 5% of the section 7 formula (about 875).
 5. In launch\_k5\_sim, the C driver's class equals the C reference model's class for every test image (on the board too, if a board run is added).
@@ -305,6 +310,8 @@ Sections 8 and 9 now follow xmemcpy\_ref; these questions close the rest. Sectio
 
 **Our next steps**
 
-- [ ] Export the weight image as a hex file in bank layout (852 rows × 64 bytes) and freeze one weight set.
-- [ ] Write and unit-test sigmoid\_core, requantize, npe, weight\_bank and argmax against the golden vectors.
-- [ ] Start sympa\_xlr from xmemcpy\_ref.sv, whose register and mem\_intf handling is the template.
+- [x] Layer-1 datapath: `npe`, `weight_mem` and `linear_layer`, each with its deterministic testbench (all PASS, the full 784 × 64 size included).
+- [ ] SR chain across the 64 NPEs, with its test.
+- [ ] AFB: `requantize` and `sigmoid_core`, then layer 2 and `argmax`.
+- [ ] Weight-image hex export from Python (852 rows × 64 bytes), then `sympa_xlr` from `xmemcpy_ref.sv`.
+- [ ] Synthesis with `qsyn_xlr` to check the 20K LE budget.
